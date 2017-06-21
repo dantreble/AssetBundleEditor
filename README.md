@@ -30,6 +30,6 @@ Right middle pane shows me the names of the 33 asset bundles that use it.
 
 You can also explore an asset bundle and the assets and sizes within it
 
-[alt text](README/pasted3.png)
+![alt text](README/pasted3.png)
 
 *This falls down for shaders (they can be different sizes in each instance depending on variation count generated) also falls down for fbx (sometimes you only reference different parts of it, eg anim)
