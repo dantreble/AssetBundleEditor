@@ -1,11 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.IO;
 using System.Linq;
-using System.Net;
+using System.Reflection;
 using UnityEditor;
 using UnityEngine;
+
 
 public class AssetBundleEditorWindow : EditorWindow
 {
@@ -174,23 +174,174 @@ public class AssetBundleEditorWindow : EditorWindow
         }
 
         var allAssetSizesPath = outputPath + "/assetSizes.tsv";
-
-        using (var allAssetSizesFile = new StreamReader(allAssetSizesPath))
+        if (File.Exists(allAssetSizesPath))
         {
-            var assetLine = allAssetSizesFile.ReadLine();
-            while (assetLine != null)
+            using (var allAssetSizesFile = new StreamReader(allAssetSizesPath))
             {
-                var tokens = assetLine.Split('\t');
-
-                Asset asset;
-                if (m_assets.TryGetValue(tokens[1], out asset))
+                var assetLine = allAssetSizesFile.ReadLine();
+                while (assetLine != null)
                 {
-                    long.TryParse(tokens[0], out asset.m_bytes);
-                }
+                    var tokens = assetLine.Split('\t');
 
-                assetLine = allAssetSizesFile.ReadLine();
+                    Asset asset;
+                    if (m_assets.TryGetValue(tokens[1], out asset))
+                    {
+                        long.TryParse(tokens[0], out asset.m_bytes);
+                    }
+
+                    assetLine = allAssetSizesFile.ReadLine();
+                }
             }
         }
+        else
+        {  
+            //Just guess asset sizes
+            foreach (var asset in m_assets)
+            {
+                var assetPath = asset.Key;
+
+                var bytes = GuessMemoryBytes(assetPath);
+
+                asset.Value.m_bytes = bytes;
+            }
+        } 
+    }
+
+    private static int GuessMemoryBytes(string a_assetPath)
+    {
+        if (a_assetPath.EndsWith(".mat", StringComparison.OrdinalIgnoreCase))
+        {
+            return 2662;
+        }
+
+        if (a_assetPath.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)
+            || a_assetPath.EndsWith(".asset", StringComparison.OrdinalIgnoreCase)
+            || a_assetPath.EndsWith(".unity", StringComparison.OrdinalIgnoreCase))
+        {
+            var length = new FileInfo(a_assetPath).Length;
+
+            return (int) (length/12);
+        }
+
+        var importer = AssetImporter.GetAtPath(a_assetPath);
+
+        var textureImporter = importer as TextureImporter;
+
+        if (textureImporter != null)
+        {
+            return  GuessTextureSizeBytes(textureImporter);
+        }
+
+        var shaderImporter = importer as ShaderImporter;
+
+        if (shaderImporter != null)
+        {
+            return 1024*1024*1; //1mb pure guess
+        }
+
+
+        var audioImporter = importer as AudioImporter;
+
+        if (audioImporter != null)
+        {
+            var property = typeof (AudioImporter).GetProperty("compSize", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
+
+            return (int) property.GetValue(audioImporter, null);
+        }
+        return 0;
+    }
+
+    private static int GetMemoryBitsPerPixel(TextureFormat a_textureFormat)
+    {
+        switch (a_textureFormat)
+        {
+            case TextureFormat.Alpha8:
+                return 8;
+            case TextureFormat.ARGB4444:
+                return 16;
+            case TextureFormat.RGB24:
+                return 32; //Is really 32 in memory
+            case TextureFormat.RGBA32:
+                return 32;
+            case TextureFormat.ARGB32:
+                return 32;
+            case TextureFormat.RGB565:
+                return 16;
+            case TextureFormat.R16:
+                return 16;
+            case TextureFormat.DXT1:
+                return 4;
+            case TextureFormat.DXT5:
+                return 8;
+            case TextureFormat.RGBA4444:
+                return 16;
+            case TextureFormat.BGRA32:
+                return 32;
+            case TextureFormat.RHalf:
+                return 16;
+            case TextureFormat.RGHalf:
+                return 16*2;
+            case TextureFormat.RGBAHalf:
+                return 16*4;
+            case TextureFormat.RFloat:
+                return 32;
+            case TextureFormat.RGFloat:
+                return 32*2;
+            case TextureFormat.RGBAFloat:
+                return 32*4;
+            case TextureFormat.YUY2:
+                return 8 + 8 + (8/4);
+            case TextureFormat.BC4:
+                return 4;
+            case TextureFormat.BC5:
+                return 8;
+            case TextureFormat.BC6H:
+                return 8;
+            case TextureFormat.BC7:
+                return 8;
+            case TextureFormat.DXT1Crunched:
+                return 4;
+            case TextureFormat.DXT5Crunched:
+                return 8;
+            default:
+                return 8;
+        }
+    }
+
+    private static int GuessTextureSizeBytes(TextureImporter a_textureImporter)
+    {
+        var args = new object[] {0, 0};
+
+        var mi = typeof (TextureImporter).GetMethod("GetWidthAndHeight", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        mi.Invoke(a_textureImporter, args);
+
+        TextureFormat textureFormat;
+        ColorSpace colorSpace;
+        int num;
+        a_textureImporter.ReadTextureImportInstructions(EditorUserBuildSettings.activeBuildTarget, out textureFormat, out colorSpace, out num);
+
+        int width = (int) args[0];
+        int height = (int) args[1];
+
+        int maxDim = width > height ? width : height;
+        int maxTextureSize = a_textureImporter.maxTextureSize;
+
+        if (maxDim > maxTextureSize)
+        {
+            float scaleFactor = (float) maxTextureSize/(float) maxDim;
+            width = (int) (width*scaleFactor);
+            height = (int) (height*scaleFactor);
+        }
+
+        int bytes = (GetMemoryBitsPerPixel(textureFormat) * width * height) / 8;
+
+        if (a_textureImporter.mipmapEnabled)
+        {
+            bytes += bytes/3;
+        }
+
+        return bytes;
     }
 
     private void CalculateAssetSize()

@@ -1,17 +1,17 @@
 ﻿using UnityEngine;
 using UnityEditor;
 using System.IO;
-using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+
 
 public class BuildPipelineExtended : MonoBehaviour 
 {
     private enum BuildReportSection
     {
-        Preamble,
-        Scenes,
+        None,
+        BundleHeader,
         SectionTotals,
         AssetSizes,
     }
@@ -56,9 +56,20 @@ public class BuildPipelineExtended : MonoBehaviour
         AssetBundleManifest manifest;
 
         //Specific to our build machine
-        //"$WORKSPACE/unity3d_editor.log"
+        //"$WORKSPACE/$SHARED_SUB_DIRECTORY/unity3d_editor.log"
+
         var workspace = System.Environment.GetEnvironmentVariable("WORKSPACE");
-        var editorLogFilePath = workspace + "/unity3d_editor.log";
+
+        var editorLogFilePath = !string.IsNullOrEmpty(workspace) ? workspace : string.Empty;
+
+        var sharedSubDirectory = System.Environment.GetEnvironmentVariable("SHARED_SUB_DIRECTORY");
+
+        if (!string.IsNullOrEmpty(sharedSubDirectory))
+        {
+            editorLogFilePath += "/" + sharedSubDirectory;
+        }
+        
+        editorLogFilePath += "/unity3d_editor.log";
 
         if (!File.Exists(editorLogFilePath))
         {
@@ -72,6 +83,7 @@ public class BuildPipelineExtended : MonoBehaviour
         }
 
         var allAssetSizes = new Dictionary<string, long>();
+        var assetsSeen = new HashSet<string>();
         var allAssetSizesPath = a_outputPath+"/assetSizes.tsv";
 
         var deltaAssetSizes = new Dictionary<string,long>();
@@ -96,40 +108,15 @@ public class BuildPipelineExtended : MonoBehaviour
             }
         }
         
-       
-
-        int bundleIndex = 0;
+        string bundlePath = null;
 
         using (var editorLog = new StreamReader(File.Open(editorLogFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))) 
         {
             editorLog.BaseStream.Seek(0, SeekOrigin.End);
 
-            var manifestBefore = new Dictionary<string,System.DateTime>();
-            
-            foreach (var manifestFile in Directory.GetFiles(a_outputPath, "*.manifest"))
-            {
-                var fileInfo = new FileInfo(manifestFile);
-
-                manifestBefore.Add(manifestFile, fileInfo.LastWriteTime);
-            }
-            
             manifest = BuildPipeline.BuildAssetBundles(a_outputPath, a_assetBundleOptions, a_targetPlatform);
 
-            var manifestsModified = new Dictionary<string, System.DateTime>();
-
-            foreach (var manifestFile in Directory.GetFiles(a_outputPath, "*.manifest"))
-            {
-                var fileInfo = new FileInfo(manifestFile);
-
-                if (!manifestBefore.ContainsKey(manifestFile) || manifestBefore[manifestFile] != fileInfo.LastWriteTime)
-                {
-                    manifestsModified.Add(manifestFile, fileInfo.LastWriteTime);
-                }
-            }
-
-            var manifestsModifiedList = manifestsModified.OrderBy(a_item => a_item.Value);
-
-            var section = BuildReportSection.Preamble;
+            var section = BuildReportSection.None;
 
             var bundleLogTempPath = FileUtil.GetUniqueTempPathInProject();
             var bundleLog = new StreamWriter(bundleLogTempPath);
@@ -137,124 +124,124 @@ public class BuildPipelineExtended : MonoBehaviour
             var assetsTSVTempPath = FileUtil.GetUniqueTempPathInProject();
             var assetsTSV = new StreamWriter(assetsTSVTempPath);
 
-            var lastLog = new StreamWriter(a_outputPath + "/last.log");
-
             // 3.9 kb     0.0% Assets/Standard Assets/Glass Refraction (Pro Only)/Sources/Shaders/Glass-Stained-BumpDistort.shader
             var assetSizeAndPath = new Regex(@"^ (\d+\.?\d*) (kb|mb)\t \d+\.?\d*\% ([^\0]+)");
-            
-            while (true) 
+           
+            while (true)
             {
                 var logLine = editorLog.ReadLine();
-                
-                if (logLine == null) 
+
+                if (logLine == null)
                 {
                     break;
                 }
 
-                lastLog.WriteLine(logLine);
-
-                if(section == BuildReportSection.Preamble && logLine.StartsWith("Level "))
+                switch (section)
                 {
-                    section = BuildReportSection.Scenes;
-                }
-                else if((section == BuildReportSection.Preamble || section == BuildReportSection.Scenes) && logLine.StartsWith("Textures      "))
-                {
-                    section = BuildReportSection.SectionTotals;
-                }
-                else if(section == BuildReportSection.SectionTotals && logLine.StartsWith("Used Assets and files"))
-                {
-                    section = BuildReportSection.AssetSizes;
-                    //Skip a line
-                    logLine = editorLog.ReadLine();
-                }
-                else if(section == BuildReportSection.AssetSizes && string.IsNullOrEmpty(logLine))
-                {
-                    section = BuildReportSection.Preamble;
-
-                    bundleLog.Dispose();
-                    assetsTSV.Dispose();
-
-                    //Standalone bundle gets modified without changing manifest
-                    if (bundleIndex < manifestsModifiedList.Count())
-                    {
-                        var manifestPath = manifestsModifiedList.ElementAt(bundleIndex).Key;
-
-                        FileReplace(bundleLogTempPath, Path.ChangeExtension(manifestPath, ".log"));
-                        FileReplace(assetsTSVTempPath, Path.ChangeExtension(manifestPath, ".tsv"));
-
-                        //open new temp files
-                        bundleIndex++;
-
-                        bundleLogTempPath = FileUtil.GetUniqueTempPathInProject();
-                        bundleLog = new StreamWriter(bundleLogTempPath);
-                        assetsTSVTempPath = FileUtil.GetUniqueTempPathInProject();
-                        assetsTSV = new StreamWriter(assetsTSVTempPath);
-                    }
-                }
-
-                if (section == BuildReportSection.Scenes || section == BuildReportSection.SectionTotals || section == BuildReportSection.AssetSizes)
-                {
-                    bundleLog.WriteLine(logLine);
-                }
-
-                if(section == BuildReportSection.Scenes)
-                {
-               
-                }
-
-                if(section == BuildReportSection.AssetSizes)
-                {
-                    var match = assetSizeAndPath.Match(logLine);
-                    
-                    if(match.Success && match.Groups.Count == 4)
-                    {
-                        var assetPath = match.Groups[3].Value;
-
-              
-                        var fractionalSizeString = match.Groups[1].Value;
-                        var sizeUnitsString = match.Groups[2].Value;
-
-                        double fractionalSize;
-
-                        if(double.TryParse(fractionalSizeString, out fractionalSize))
+                    case BuildReportSection.None:
+                        if (logLine == "-------------------------------------------------------------------------------")
                         {
-                            long bytes;
-                            if(string.Compare(sizeUnitsString,"mb") == 0)
-                            {
-                                bytes = (long)(fractionalSize*1024*1024);
-                            }
-                            else //if(string.Compare(sizeUnitsString,"kb") == 0)
-                            {   
-                                bytes = (long)(fractionalSize*1024);
-                            }
-                            
-                            assetsTSV.WriteLine(bytes + "\t" + assetPath);
+                            section = BuildReportSection.BundleHeader;
+                        }
+                       
+                        break;
+                    case BuildReportSection.BundleHeader:
 
-                            long previousSize;
-                            if (allAssetSizes.TryGetValue(assetPath, out previousSize))
+                        bundleLog.WriteLine(logLine);
+
+                        if (logLine.StartsWith("Bundle Name: "))
+                        {
+                            bundlePath = logLine.Substring("Bundle Name: ".Length);
+                        }
+                        else if (logLine == @"Uncompressed usage by category:")
+                        {
+                            section = BuildReportSection.SectionTotals;
+                        }
+
+                        break;
+                    case BuildReportSection.SectionTotals:
+                        bundleLog.WriteLine(logLine);
+
+                        if (logLine == @"Used Assets and files from the Resources folder, sorted by uncompressed size:")
+                        {
+                            section = BuildReportSection.AssetSizes;
+                        }
+                        break;
+                    case BuildReportSection.AssetSizes:
+                        if (logLine != "-------------------------------------------------------------------------------")
+                        {
+                            bundleLog.WriteLine(logLine);
+
+                            var match = assetSizeAndPath.Match(logLine);
+
+                            if (match.Success && match.Groups.Count == 4)
                             {
-                                if (previousSize == bytes)
+                                var assetPath = match.Groups[3].Value;
+
+                                var fractionalSizeString = match.Groups[1].Value;
+                                var sizeUnitsString = match.Groups[2].Value;
+
+                                double fractionalSize;
+
+                                if (double.TryParse(fractionalSizeString, out fractionalSize))
                                 {
-                                    continue;
+                                    long bytes;
+                                    if (string.Compare(sizeUnitsString, "mb") == 0)
+                                    {
+                                        bytes = (long) (fractionalSize*1024*1024);
+                                    }
+                                    else //if(string.Compare(sizeUnitsString,"kb") == 0)
+                                    {
+                                        bytes = (long) (fractionalSize*1024);
+                                    }
+
+                                    assetsTSV.WriteLine(bytes + "\t" + assetPath);
+
+                                    //Only count the first to work around a unity bug 
+                                    if (assetsSeen.Add(assetPath))
+                                    {
+                                        long previousSize;
+                                        if (allAssetSizes.TryGetValue(assetPath, out previousSize))
+                                        {
+                                            if (previousSize == bytes)
+                                            {
+                                                continue;
+                                            }
+                                            allAssetSizes[assetPath] = bytes;
+                                            deltaAssetSizes[assetPath] = bytes - previousSize;
+                                        }
+                                        else
+                                        {
+                                            allAssetSizes[assetPath] = bytes;
+                                        }
+                                    }
                                 }
-                                allAssetSizes[assetPath] = bytes;
-                                deltaAssetSizes[assetPath] = bytes - previousSize;
-                            }
-                            else
-                            {
-                                allAssetSizes[assetPath] = bytes;
                             }
                         }
-                    }
+                        else
+                        {
+                            bundleLog.Dispose();
+                            assetsTSV.Dispose();
+
+                            var s = a_outputPath + "/" + bundlePath;
+                            FileReplace(bundleLogTempPath, s + ".log");
+                            FileReplace(assetsTSVTempPath, s + ".tsv");
+
+                            bundleLogTempPath = FileUtil.GetUniqueTempPathInProject();
+                            bundleLog = new StreamWriter(bundleLogTempPath);
+                            assetsTSVTempPath = FileUtil.GetUniqueTempPathInProject();
+                            assetsTSV = new StreamWriter(assetsTSVTempPath);
+
+                            section = BuildReportSection.None;
+                        }
+
+                        break;
                 }
             }
 
             bundleLog.Dispose();
             assetsTSV.Dispose();
-
-            lastLog.Dispose();
         }
-
 
         using (var allAssetSizesFile = new StreamWriter(allAssetSizesPath))
         {
@@ -263,7 +250,6 @@ public class BuildPipelineExtended : MonoBehaviour
                 allAssetSizesFile.WriteLine(allAssetSize.Value + "\t" + allAssetSize.Key);
             }
         }
-
 
         var deltaAssetSizesPath = a_outputPath + "/assetSizesDelta.tsv";
         using (var allAssetDeltaSizesFile = new StreamWriter(deltaAssetSizesPath))

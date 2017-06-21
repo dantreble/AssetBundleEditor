@@ -222,7 +222,7 @@ public class AutomatedBuildUtils : Editor
 
         try
         {
-            EditorUserBuildSettings.SwitchActiveBuildTarget(a_buildTarget);
+            EditorUserBuildSettings.SwitchActiveBuildTarget(a_buildTargetGroup,a_buildTarget);
 
             var assetBundleOutputPath = Path.Combine(Application.streamingAssetsPath, AssetBundlesOutputPath);
 
